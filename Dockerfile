@@ -273,6 +273,8 @@ COPY --from=runtime-assets --chown=node:node /app/${OPENCLAW_BUNDLED_PLUGIN_DIR}
 COPY --from=runtime-assets --chown=node:node /app/skills ./skills
 COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 COPY --from=runtime-assets --chown=node:node /app/qa ./qa
+COPY --chown=node:node deploy/fileslink-backup.sh deploy/render-entrypoint.sh ./deploy/
+RUN chmod 755 /app/deploy/fileslink-backup.sh /app/deploy/render-entrypoint.sh
 
 # Validate the three version surfaces in every release-built runtime variant.
 ARG OPENCLAW_DOCKER_BUILD_VERSION

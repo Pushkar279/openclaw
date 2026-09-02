@@ -59,7 +59,23 @@ services:
 | Starter   | Never             | 1GB+          | Personal use, small teams     |
 | Standard+ | Never             | 1GB+          | Production, multiple channels |
 
-The Blueprint defaults to `starter`. To use the free tier, change `plan: free` **and delete the `disk:` block** in your fork's `render.yaml`; Render rejects a Blueprint that attaches a persistent disk to a free instance. Without that disk, OpenClaw state resets on every deploy.
+The official Blueprint defaults to `starter`, but this fork is already configured for `plan: free` with no `disk:` block. Render rejects a Blueprint that attaches a persistent disk to a free instance. Without that disk, OpenClaw state resets on every deploy and is handled by the FilesLink workflow below.
+
+## Free-tier external state
+
+The Free Blueprint in this fork intentionally has no Render disk. Configure these Render environment variables before deploying:
+
+| Variable | Value |
+| --- | --- |
+| `FILESLINK_API_BASE_URL` | The FastTelethon API base URL from your FilesLink deployment, without a trailing slash |
+| `FILESLINK_API_KEY` | The same secret configured as `FILESLINK_API_KEY` on the FilesLink FastTelethon service |
+| `FILESLINK_CHANNEL_ID` | The private Telegram channel ID used by FilesLink |
+| `FILESLINK_BACKUP_INTERVAL_SECONDS` | Optional interval; defaults to `86400` |
+| `FILESLINK_RESTORE_ON_START` | Optional; defaults to `true` |
+
+At startup, the container discovers the newest FilesLink manifest, downloads and hash-verifies every archive chunk, restores the archive into a fresh staging directory, activates the recorded assets, and runs `openclaw doctor` before starting the Gateway. A background loop creates verified backups using `openclaw backup create --output <directory> --verify`, splits the archive into 45 MiB pieces, and uploads them one at a time. The FilesLink API key is never committed to GitHub.
+
+The FilesLink endpoint must be the FastTelethon service because that service implements `/upload`, `/list`, and `/download/{channel_id}/{message_id}`. The FilesLink FastTelethon service must be deployed and Telegram-authorized before OpenClaw can restore or upload state.
 
 ## After deployment
 

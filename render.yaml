@@ -7,7 +7,7 @@ services:
     plan: free
     # The image CMD has no --allow-unconfigured, so a fresh ephemeral
     # filesystem must be allowed to boot before restore/configuration.
-    dockerCommand: node openclaw.mjs gateway --allow-unconfigured
+    dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --allow-unconfigured
     healthCheckPath: /startupz
     envVars:
       - key: OPENCLAW_GATEWAY_PORT
@@ -18,3 +18,13 @@ services:
         value: /tmp/workspace
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
+      - key: FILESLINK_API_BASE_URL
+        sync: false
+      - key: FILESLINK_API_KEY
+        sync: false
+      - key: FILESLINK_CHANNEL_ID
+        sync: false
+      - key: FILESLINK_BACKUP_INTERVAL_SECONDS
+        value: "86400"
+      - key: FILESLINK_RESTORE_ON_START
+        value: "true"
