@@ -138,6 +138,8 @@ self.addEventListener("fetch", (event) => {
 
   // Skip non-UI routes — API, RPC, and plugin routes should never be cached.
   if (
+    url.pathname === "/chat" ||
+    url.pathname.startsWith("/chat/") ||
     url.pathname.startsWith("/api/") ||
     url.pathname.startsWith("/rpc") ||
     url.pathname.startsWith("/plugins/")
@@ -148,17 +150,20 @@ self.addEventListener("fetch", (event) => {
   // Cache-first for hashed assets; network-first for HTML/other.
   if (url.pathname.includes("/assets/")) {
     event.respondWith(
-      caches.match(event.request).then(
-        (cached) =>
-          cached ||
-          fetch(event.request).then((response) => {
-            if (response.ok) {
-              const clone = response.clone();
-              void caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-            }
-            return response;
-          }),
-      ),
+      caches.match(event.request).then(async (cached) => {
+        if (cached) return cached;
+
+        try {
+          const response = await fetch(event.request);
+          if (response.ok) {
+            const clone = response.clone();
+            void caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        } catch {
+          return Response.error();
+        }
+      }),
     );
   } else {
     event.respondWith(
@@ -170,7 +175,7 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(event.request)),
+        .catch(() => caches.match(event.request).then((cached) => cached || Response.error())),
     );
   }
 });

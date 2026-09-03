@@ -4,10 +4,8 @@ services:
     runtime: docker
     plan: free
 
-    dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --bind lan --allow-unconfigured
-
-    # Health check intentionally disabled while debugging
-    # because OpenClaw may require authentication on its HTTP endpoint.
+    dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --bind lan --port 10000 --allow-unconfigured
+    healthCheckPath: /healthz
 
     envVars:
       # ============================================================

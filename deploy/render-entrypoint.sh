@@ -74,18 +74,6 @@ node openclaw.mjs config set \
 echo "[render] Gateway token authentication configured."
 
 # ============================================================
-# Control UI authentication
-# ============================================================
-
-echo "[render] Configuring Control UI authentication..."
-
-node openclaw.mjs config set \
-    gateway.controlUi.allowInsecureAuth \
-    true || true
-
-echo "[render] Control UI token authentication enabled."
-
-# ============================================================
 # Render proxy
 # ============================================================
 
@@ -264,7 +252,7 @@ fi
 # ============================================================
 
 echo "[render] Gateway process: $GATEWAY_PID"
-echo "[render] Device pairing monitor: $PAIRING_MONITOR_PID"
+echo "[render] Device pairing monitor: disabled"
 echo "[render] Render service is running."
 
 # ============================================================
