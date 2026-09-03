@@ -19,4 +19,10 @@ if [ "$interval" -gt 0 ] && [ -x "$BACKUP_TOOL" ] && [ -n "${FILESLINK_API_BASE_
   ) &
 fi
 
+# OpenClaw refuses LAN binding without explicit authentication. Render provides
+# OPENCLAW_GATEWAY_TOKEN through the Blueprint's generated secret; pass it as a
+# CLI argument so this works even when no local config exists on first boot.
+if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+  exec "$@" --token "$OPENCLAW_GATEWAY_TOKEN"
+fi
 exec "$@"
