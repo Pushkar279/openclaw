@@ -1,48 +1,35 @@
 #!/bin/sh
 set -eu
 
-# External backup adapter for Render Free. It deliberately keeps every upload
-# below FilesLink's 50 MB API ceiling and never stores credentials in Git.
-BASE_URL=${FILESLINK_API_BASE_URL:-}
-API_KEY=${FILESLINK_API_KEY:-}
-CHANNEL_ID=${FILESLINK_CHANNEL_ID:-}
+# External backup adapter for Render Free. FilesLink's hosted Rust service
+# accepts raw-body uploads and stores them in its configured Telegram channel.
+BASE_URL=${FILESLINK_API_BASE_URL:-https://tcloud-2f7u.onrender.com}
 CHUNK_BYTES=${FILESLINK_CHUNK_BYTES:-47185920}
 BACKUP_PREFIX=${FILESLINK_BACKUP_PREFIX:-openclaw-backup}
 WORK_DIR=${FILESLINK_WORK_DIR:-/tmp/openclaw-fileslink}
 
-if [ -z "$BASE_URL" ] || [ -z "$API_KEY" ] || [ -z "$CHANNEL_ID" ]; then
-  echo "FilesLink backup disabled: set FILESLINK_API_BASE_URL, FILESLINK_API_KEY, and FILESLINK_CHANNEL_ID."
-  exit 0
-fi
-
 BASE_URL=$(printf '%s' "$BASE_URL" | sed 's:/*$::')
 mkdir -p "$WORK_DIR"
 
-api_headers() {
-  printf '%s\n' "Authorization: Bearer $API_KEY"
-}
-
-json_message_id() {
-  node --input-type=module -e '
-    let input = "";
-    process.stdin.on("data", c => input += c);
-    process.stdin.on("end", () => {
-      const value = JSON.parse(input);
-      if (!value.success || !Number.isInteger(value.message_id)) process.exit(2);
-      process.stdout.write(String(value.message_id));
-    });
-  '
+url_encode() {
+  node --input-type=module - "$1" <<'NODE'
+const value = process.argv[2];
+process.stdout.write(encodeURIComponent(value));
+NODE
 }
 
 upload_file() {
   file=$1
-  caption=$2
+  name=$2
+  encoded_name=$(url_encode "$name")
   response=$(curl -fsS --retry 3 --connect-timeout 15 --max-time 900 \
-    -H "$(api_headers)" \
-    -F "file=@$file" \
-    -F "caption=$caption" \
-    "$BASE_URL/upload?channel_id=$(printf '%s' "$CHANNEL_ID" | sed 's/ /%20/g')")
-  printf '%s' "$response" | json_message_id
+    --data-binary "@$file" \
+    "$BASE_URL/api/files/upload?filename=$encoded_name")
+  node --input-type=module - "$response" <<'NODE'
+const value = JSON.parse(process.argv[2]);
+if (!value.success || typeof value.unique_id !== "string") process.exit(2);
+process.stdout.write(value.unique_id);
+NODE
 }
 
 create_backup() {
@@ -67,40 +54,39 @@ create_backup() {
     size=$(wc -c < "$chunk" | tr -d ' ')
     [ "$size" -le "$CHUNK_BYTES" ] || { echo "Chunk exceeds configured limit" >&2; exit 1; }
     sha=$(sha256sum "$chunk" | awk '{print $1}')
-    name=$(basename "$chunk")
-    caption="$BACKUP_PREFIX:$backup_id:chunk:$index"
+    chunk_name="$BACKUP_PREFIX-$backup_id.part-$(printf '%06d' "$index")"
     echo "Uploading chunk $index ($size bytes)"
-    message_id=$(upload_file "$chunk" "$caption")
-    printf '%s\t%s\t%s\t%s\t%s\n' "$index" "$name" "$size" "$sha" "$message_id" >> "$chunks_json"
+    unique_id=$(upload_file "$chunk" "$chunk_name")
+    printf '%s\t%s\t%s\t%s\t%s\n' "$index" "$chunk_name" "$size" "$sha" "$unique_id" >> "$chunks_json"
     index=$((index + 1))
   done
 
   archive_sha=$(sha256sum "$archive" | awk '{print $1}')
   archive_size=$(wc -c < "$archive" | tr -d ' ')
   manifest="$run_dir/$BACKUP_PREFIX-$backup_id.manifest.json"
-  node --input-type=module - "$chunks_json" "$manifest" "$backup_id" "$archive_size" "$archive_sha" "$CHUNK_BYTES" "$CHANNEL_ID" "$BACKUP_PREFIX" <<'NODE'
+  node --input-type=module - "$chunks_json" "$manifest" "$backup_id" "$archive_size" "$archive_sha" "$CHUNK_BYTES" "$BASE_URL" "$BACKUP_PREFIX" <<'NODE'
 import fs from "node:fs";
-const [jsonl, output, backupId, archiveSize, archiveSha, chunkBytes, channelId, prefix] = process.argv.slice(2);
+const [jsonl, output, backupId, archiveSize, archiveSha, chunkBytes, baseUrl, prefix] = process.argv.slice(2);
 const chunks = fs.readFileSync(jsonl, "utf8").trim().split("\n").filter(Boolean).map(line => {
-  const [index, name, size, sha256, messageId] = line.split("\t");
-  return { index: Number(index), name, size: Number(size), sha256, message_id: Number(messageId) };
+  const [index, name, size, sha256, uniqueId] = line.split("\t");
+  return { index: Number(index), name, size: Number(size), sha256, unique_id: uniqueId };
 });
 fs.writeFileSync(output, JSON.stringify({
-  format: 1,
+  format: 2,
   backup_id: backupId,
   prefix,
-  channel_id: channelId,
   archive_size: Number(archiveSize),
   archive_sha256: archiveSha,
   chunk_bytes: Number(chunkBytes),
   chunks,
+  fileslink_base_url: baseUrl,
   created_at: new Date().toISOString(),
 }, null, 2) + "\n");
 NODE
 
-  manifest_caption="$BACKUP_PREFIX:$backup_id:manifest"
+  manifest_name="$BACKUP_PREFIX-$backup_id.manifest.json"
   echo "Uploading backup manifest"
-  upload_file "$manifest" "$manifest_caption" >/dev/null
+  upload_file "$manifest" "$manifest_name" >/dev/null
   echo "FilesLink backup completed: $backup_id ($index chunks)"
   trap - EXIT INT TERM
   rm -rf "$run_dir"
@@ -110,37 +96,34 @@ restore_latest() {
   restore_dir="$WORK_DIR/restore-$$"
   mkdir -p "$restore_dir"
   trap 'rm -rf "$restore_dir"' EXIT INT TERM
-  listing=$(curl -fsS --retry 3 --connect-timeout 15 --get \
-    -H "$(api_headers)" \
-    --data-urlencode "prefix=$BACKUP_PREFIX:" \
-    "$BASE_URL/list")
+  listing=$(curl -fsS --retry 3 --connect-timeout 15 --max-time 120 "$BASE_URL/api/files")
   printf '%s' "$listing" > "$restore_dir/listing.json"
   manifest_info=$(node --input-type=module - "$restore_dir/listing.json" "$BACKUP_PREFIX" <<'NODE'
 import fs from "node:fs";
 const [listingPath, prefix] = process.argv.slice(2);
-const files = JSON.parse(fs.readFileSync(listingPath, "utf8")).files ?? [];
-const manifests = files.filter(x => x.caption?.startsWith(`${prefix}:`) && x.caption.endsWith(":manifest"));
-manifests.sort((a, b) => String(b.caption).localeCompare(String(a.caption)));
-if (manifests[0]) process.stdout.write(`${manifests[0].channel_id}\t${manifests[0].message_id}`);
+const files = JSON.parse(fs.readFileSync(listingPath, "utf8"));
+const manifests = files.filter(x => typeof x.file_name === "string" && x.file_name.startsWith(`${prefix}-`) && x.file_name.endsWith(".manifest.json"));
+manifests.sort((a, b) => Number(b.uploaded_at ?? 0) - Number(a.uploaded_at ?? 0));
+if (manifests[0]) process.stdout.write(`${manifests[0].unique_id}\t${manifests[0].file_name}`);
 NODE
   )
   [ -n "$manifest_info" ] || { echo "No FilesLink backup manifest found; starting with empty state."; trap - EXIT INT TERM; rm -rf "$restore_dir"; return 0; }
   tab=$(printf '\t')
-  IFS="$tab" read -r manifest_channel manifest_message <<EOF
+  IFS="$tab" read -r manifest_id manifest_name <<EOF
 $manifest_info
 EOF
-  manifest_file="$restore_dir/manifest.json"
+  manifest_file="$restore_dir/$manifest_name"
   curl -fsS --retry 3 --connect-timeout 15 --max-time 900 \
-    -H "$(api_headers)" "$BASE_URL/download/$manifest_channel/$manifest_message" -o "$manifest_file"
+    "$BASE_URL/files/$manifest_id?dl=1" -o "$manifest_file"
 
-  node --input-type=module - "$manifest_file" "$restore_dir" "$BASE_URL" "$API_KEY" <<'NODE'
+  node --input-type=module - "$manifest_file" "$restore_dir" "$BASE_URL" <<'NODE'
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
-const [manifestPath, dir, base, key] = process.argv.slice(2);
+const [manifestPath, dir, base] = process.argv.slice(2);
 const m = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 for (const chunk of [...m.chunks].sort((a, b) => a.index - b.index)) {
   const out = `${dir}/${chunk.name}`;
-  execFileSync("curl", ["-fsS", "--retry", "3", "--connect-timeout", "15", "--max-time", "900", "-H", `Authorization: Bearer ${key}`, `${base}/download/${m.channel_id}/${chunk.message_id}`, "-o", out]);
+  execFileSync("curl", ["-fsS", "--retry", "3", "--connect-timeout", "15", "--max-time", "900", `${base}/files/${chunk.unique_id}?dl=1`, "-o", out]);
   const actual = execFileSync("sha256sum", [out], { encoding: "utf8" }).split(/\s+/)[0];
   if (actual !== chunk.sha256) throw new Error(`Chunk hash mismatch: ${chunk.index}`);
 }

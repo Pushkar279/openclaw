@@ -19,11 +19,7 @@ services:
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
       - key: FILESLINK_API_BASE_URL
-        sync: false
-      - key: FILESLINK_API_KEY
-        sync: false
-      - key: FILESLINK_CHANNEL_ID
-        sync: false
+        value: https://tcloud-2f7u.onrender.com
       - key: FILESLINK_BACKUP_INTERVAL_SECONDS
         value: "86400"
       - key: FILESLINK_RESTORE_ON_START

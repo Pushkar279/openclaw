@@ -67,15 +67,13 @@ The Free Blueprint in this fork intentionally has no Render disk. Configure thes
 
 | Variable | Value |
 | --- | --- |
-| `FILESLINK_API_BASE_URL` | The FastTelethon API base URL from your FilesLink deployment, without a trailing slash |
-| `FILESLINK_API_KEY` | The same secret configured as `FILESLINK_API_KEY` on the FilesLink FastTelethon service |
-| `FILESLINK_CHANNEL_ID` | The private Telegram channel ID used by FilesLink |
+| `FILESLINK_API_BASE_URL` | Defaults to `https://tcloud-2f7u.onrender.com`; override only if the hosted service changes |
 | `FILESLINK_BACKUP_INTERVAL_SECONDS` | Optional interval; defaults to `86400` |
 | `FILESLINK_RESTORE_ON_START` | Optional; defaults to `true` |
 
-At startup, the container discovers the newest FilesLink manifest, downloads and hash-verifies every archive chunk, restores the archive into a fresh staging directory, activates the recorded assets, and runs `openclaw doctor` before starting the Gateway. A background loop creates verified backups using `openclaw backup create --output <directory> --verify`, splits the archive into 45 MiB pieces, and uploads them one at a time. The FilesLink API key is never committed to GitHub.
+At startup, the container discovers the newest FilesLink manifest, downloads and hash-verifies every archive chunk, restores the archive into a fresh staging directory, activates the recorded assets, and runs `openclaw doctor` before starting the Gateway. A background loop creates verified backups using `openclaw backup create --output <directory> --verify`, splits the archive into 45 MiB pieces, and uploads them one at a time. No FilesLink API key or channel ID is required; the hosted service owns the Telegram storage configuration.
 
-The FilesLink endpoint must be the FastTelethon service because that service implements `/upload`, `/list`, and `/download/{channel_id}/{message_id}`. The FilesLink FastTelethon service must be deployed and Telegram-authorized before OpenClaw can restore or upload state.
+The configured endpoint is the hosted FilesLink Rust service, which implements `/api/files/upload?filename=...`, `/api/files`, and `/files/{unique_id}`. The service must remain deployed and its Telegram bot must retain access to its configured storage channel before OpenClaw can restore or upload state.
 
 ## After deployment
 
