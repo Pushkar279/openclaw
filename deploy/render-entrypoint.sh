@@ -208,15 +208,26 @@ echo "[render] Starting automatic device-pairing monitor..."
                 process.stdin.on("data", (chunk) => { input += chunk; });
                 process.stdin.on("end", () => {
                     try {
-                        const data = JSON.parse(input.trim());
-                        const pending = Array.isArray(data.pending)
-                            ? data.pending
-                            : Array.isArray(data.pendingRequests)
-                              ? data.pendingRequests
-                              : [];
-                        const request = pending.find((item) =>
-                            typeof item?.requestId === "string"
+                        const start = input.indexOf("{");
+                        const end = input.lastIndexOf("}");
+                        const data = JSON.parse(
+                            (start >= 0 && end >= start)
+                                ? input.slice(start, end + 1)
+                                : input.trim(),
                         );
+                        const pending = Array.isArray(data?.pending)
+                            ? data.pending
+                            : Array.isArray(data?.pendingRequests)
+                              ? data.pendingRequests
+                              : Array.isArray(data?.requests)
+                                ? data.requests
+                                : [];
+                        const request = pending
+                            .slice()
+                            .reverse()
+                            .find((item) =>
+                                typeof item?.requestId === "string"
+                            );
                         if (request) process.stdout.write(request.requestId);
                     } catch (_) {}
                 });
