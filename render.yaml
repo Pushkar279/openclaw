@@ -4,25 +4,23 @@ services:
     runtime: docker
     plan: free
 
-    # Restore T Cloud state first, then start OpenClaw.
-    # Render provides PORT at runtime; the entrypoint passes it to OpenClaw.
     dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --bind lan --allow-unconfigured
 
     healthCheckPath: /startupz
 
     envVars:
-      # Render's PORT is the actual public HTTP port.
-      # OpenClaw will receive it through the entrypoint.
+      # Render's public HTTP port
       - key: OPENCLAW_GATEWAY_PORT
         value: "10000"
 
+      # OpenClaw state
       - key: OPENCLAW_STATE_DIR
         value: /tmp/.openclaw
 
       - key: OPENCLAW_WORKSPACE_DIR
         value: /tmp/workspace
 
-      # Render generates the gateway secret.
+      # Render generates the gateway token automatically
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
 
@@ -36,8 +34,7 @@ services:
       - key: FILESLINK_RESTORE_ON_START
         value: "true"
 
-      # Build-time memory settings.
-      # These affect the build, not the 512-MB runtime limit.
+      # Build-time memory settings
       - key: OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB
         value: "4096"
 
