@@ -185,6 +185,57 @@ fi
 echo "[render] Gateway is ready."
 
 # ============================================================
+# Automatic Control UI device pairing
+# ============================================================
+# Free Render web services do not provide Shell/SSH access. Monitor the
+# gateway's pending requests and approve the exact request ID once the
+# browser has connected with the shared gateway token.
+echo "[render] Starting automatic device-pairing monitor..."
+(
+    sleep 5
+    while kill -0 "$GATEWAY_PID" 2>/dev/null; do
+        PAIRING_OUTPUT="$(
+            node openclaw.mjs devices list \
+                --token "$OPENCLAW_GATEWAY_TOKEN" \
+                --json 2>/dev/null || true
+        )"
+
+        REQUEST_ID="$(
+            printf '%s\n' "$PAIRING_OUTPUT" |
+            node -e '
+                let input = "";
+                process.stdin.on("data", (chunk) => { input += chunk; });
+                process.stdin.on("end", () => {
+                    try {
+                        const data = JSON.parse(input.trim());
+                        const pending = Array.isArray(data.pending)
+                            ? data.pending
+                            : Array.isArray(data.pendingRequests)
+                              ? data.pendingRequests
+                              : [];
+                        const request = pending.find((item) =>
+                            typeof item?.requestId === "string"
+                        );
+                        if (request) process.stdout.write(request.requestId);
+                    } catch (_) {}
+                });
+            ' 2>/dev/null || true
+        )"
+
+        if [ -n "$REQUEST_ID" ]; then
+            echo "[render] Approving Control UI device request: $REQUEST_ID"
+            node openclaw.mjs devices approve \
+                "$REQUEST_ID" \
+                --token "$OPENCLAW_GATEWAY_TOKEN" \
+                --json 2>&1 || true
+        fi
+
+        sleep 3
+    done
+) &
+PAIRING_MONITOR_PID=$!
+
+# ============================================================
 # Owner dashboard
 # ============================================================
 
@@ -252,7 +303,7 @@ fi
 # ============================================================
 
 echo "[render] Gateway process: $GATEWAY_PID"
-echo "[render] Device pairing monitor: disabled"
+echo "[render] Device pairing monitor: $PAIRING_MONITOR_PID"
 echo "[render] Render service is running."
 
 # ============================================================
