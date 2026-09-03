@@ -2,31 +2,44 @@ services:
   - type: web
     name: openclaw
     runtime: docker
-    # Render Free does not support persistent disks. State is restored from
-    # the external backup workflow described in docs/install/render.mdx.
     plan: free
-    # The entrypoint permits a fresh ephemeral filesystem to boot before
-    # restore/configuration and binds the Gateway for Render ingress.
+
+    # Restore T Cloud state first, then start OpenClaw.
+    # Render provides PORT at runtime; the entrypoint passes it to OpenClaw.
     dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --bind lan --allow-unconfigured
+
     healthCheckPath: /startupz
+
     envVars:
+      # Render's PORT is the actual public HTTP port.
+      # OpenClaw will receive it through the entrypoint.
       - key: OPENCLAW_GATEWAY_PORT
-        value: "8080"
+        value: "10000"
+
       - key: OPENCLAW_STATE_DIR
         value: /tmp/.openclaw
+
       - key: OPENCLAW_WORKSPACE_DIR
         value: /tmp/workspace
+
+      # Render generates the gateway secret.
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
+
+      # T Cloud / FilesLink persistence
       - key: FILESLINK_API_BASE_URL
         value: https://tcloud-2f7u.onrender.com
+
       - key: FILESLINK_BACKUP_INTERVAL_SECONDS
         value: "86400"
+
       - key: FILESLINK_RESTORE_ON_START
         value: "true"
-      # Render's Docker build environment may hide its cgroup limit from tsdown.
-      # These values are translated to Docker build args by Render.
+
+      # Build-time memory settings.
+      # These affect the build, not the 512-MB runtime limit.
       - key: OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB
         value: "4096"
+
       - key: OPENCLAW_DOCKER_BUILD_NODE_OPTIONS
         value: "--max-old-space-size=4096"
