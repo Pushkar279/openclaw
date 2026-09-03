@@ -433,4 +433,4 @@ RUN COREPACK_ENABLE_NETWORK=0 PNPM_CONFIG_OFFLINE=true pnpm --version
 HEALTHCHECK --interval=3m --timeout=10s --start-period=15s --retries=3 \
   CMD ["node", "dist/docker-healthcheck.js"]
 ENTRYPOINT ["tini", "-s", "--"]
-CMD ["node", "openclaw.mjs", "gateway"]
+CMD ["/app/deploy/render-entrypoint.sh", "node", "openclaw.mjs", "gateway", "--bind", "lan", "--allow-unconfigured"]

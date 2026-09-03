@@ -5,9 +5,9 @@ services:
     # Render Free does not support persistent disks. State is restored from
     # the external backup workflow described in docs/install/render.mdx.
     plan: free
-    # The image CMD has no --allow-unconfigured, so a fresh ephemeral
-    # filesystem must be allowed to boot before restore/configuration.
-    dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --allow-unconfigured
+    # The entrypoint permits a fresh ephemeral filesystem to boot before
+    # restore/configuration and binds the Gateway for Render ingress.
+    dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --bind lan --allow-unconfigured
     healthCheckPath: /startupz
     envVars:
       - key: OPENCLAW_GATEWAY_PORT
