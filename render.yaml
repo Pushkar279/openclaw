@@ -6,7 +6,7 @@ services:
 
     dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --bind lan --allow-unconfigured
 
-    healthCheckPath: /startupz
+    # healthCheckPath intentionally disabled while debugging
 
     envVars:
       # Render's public HTTP port
