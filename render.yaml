@@ -6,25 +6,35 @@ services:
 
     dockerCommand: /app/deploy/render-entrypoint.sh node openclaw.mjs gateway --bind lan --allow-unconfigured
 
-    # healthCheckPath intentionally disabled while debugging
+    # Health check intentionally disabled while debugging
+    # because OpenClaw may require authentication on its HTTP endpoint.
 
     envVars:
-      # Render's public HTTP port
+      # ============================================================
+      # Render / OpenClaw Gateway
+      # ============================================================
+
       - key: OPENCLAW_GATEWAY_PORT
         value: "10000"
 
-      # OpenClaw state
       - key: OPENCLAW_STATE_DIR
         value: /tmp/.openclaw
 
       - key: OPENCLAW_WORKSPACE_DIR
         value: /tmp/workspace
 
-      # Render generates the gateway token automatically
+      # Render generates and stores the Gateway token.
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
 
+      # Print the one-time dashboard owner URL in the Render logs.
+      - key: OPENCLAW_RENDER_PRINT_DASHBOARD
+        value: "true"
+
+      # ============================================================
       # T Cloud / FilesLink persistence
+      # ============================================================
+
       - key: FILESLINK_API_BASE_URL
         value: https://tcloud-2f7u.onrender.com
 
@@ -34,7 +44,10 @@ services:
       - key: FILESLINK_RESTORE_ON_START
         value: "true"
 
-      # Build-time memory settings
+      # ============================================================
+      # Docker build memory
+      # ============================================================
+
       - key: OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB
         value: "4096"
 
