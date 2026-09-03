@@ -196,6 +196,7 @@ echo "[render] Starting automatic device-pairing monitor..."
     while kill -0 "$GATEWAY_PID" 2>/dev/null; do
         PAIRING_OUTPUT="$(
             node openclaw.mjs devices list \
+                --url "ws://127.0.0.1:$PORT" \
                 --token "$OPENCLAW_GATEWAY_TOKEN" \
                 --json 2>/dev/null || true
         )"
@@ -226,6 +227,7 @@ echo "[render] Starting automatic device-pairing monitor..."
             echo "[render] Approving Control UI device request: $REQUEST_ID"
             node openclaw.mjs devices approve \
                 "$REQUEST_ID" \
+                --url "ws://127.0.0.1:$PORT" \
                 --token "$OPENCLAW_GATEWAY_TOKEN" \
                 --json 2>&1 || true
         fi
