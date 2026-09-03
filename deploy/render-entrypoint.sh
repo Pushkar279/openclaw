@@ -6,7 +6,7 @@ BACKUP_TOOL=/app/deploy/fileslink-backup.sh
 echo "[render] Starting OpenClaw Render entrypoint..."
 
 # ------------------------------------------------------------
-# 1. Restore persistent state
+# 1. Restore persistent OpenClaw state from T Cloud
 # ------------------------------------------------------------
 
 if [ "${FILESLINK_RESTORE_ON_START:-true}" = "true" ] && [ -x "$BACKUP_TOOL" ]; then
@@ -17,7 +17,29 @@ if [ "${FILESLINK_RESTORE_ON_START:-true}" = "true" ] && [ -x "$BACKUP_TOOL" ]; 
 fi
 
 # ------------------------------------------------------------
-# 2. Configure Render reverse proxy
+# 2. Configure Gateway authentication
+# ------------------------------------------------------------
+
+if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+    echo "[render] ERROR: OPENCLAW_GATEWAY_TOKEN is not set." >&2
+    echo "[render] Add OPENCLAW_GATEWAY_TOKEN to the Render environment." >&2
+    exit 1
+fi
+
+echo "[render] Configuring gateway token authentication..."
+
+node openclaw.mjs config set \
+    gateway.auth.mode \
+    token
+
+node openclaw.mjs config set \
+    gateway.auth.token \
+    "$OPENCLAW_GATEWAY_TOKEN"
+
+echo "[render] Gateway token authentication configured."
+
+# ------------------------------------------------------------
+# 3. Configure Render reverse proxy
 # ------------------------------------------------------------
 
 echo "[render] Configuring trusted Render proxy..."
@@ -27,11 +49,8 @@ node openclaw.mjs config set \
     '["127.0.0.1","::1"]' || \
     echo "[render] WARNING: Could not configure trustedProxies." >&2
 
-# Keep normal token authentication.
-# Do NOT configure gateway.auth.mode as trusted-proxy.
-
 # ------------------------------------------------------------
-# 3. Configure Control UI origin
+# 4. Configure Control UI origin
 # ------------------------------------------------------------
 
 if [ -n "${RENDER_EXTERNAL_URL:-}" ]; then
@@ -44,7 +63,7 @@ if [ -n "${RENDER_EXTERNAL_URL:-}" ]; then
 fi
 
 # ------------------------------------------------------------
-# 4. Render port
+# 5. Render PORT
 # ------------------------------------------------------------
 
 PORT_VALUE="${PORT:-10000}"
@@ -52,32 +71,31 @@ PORT_VALUE="${PORT:-10000}"
 echo "[render] Gateway port: $PORT_VALUE"
 
 # ------------------------------------------------------------
-# 5. Start Gateway
+# 6. Start Gateway
+#
+# Authentication is already configured above.
+# We intentionally do NOT pass a second --token argument.
 # ------------------------------------------------------------
 
 echo "[render] Starting gateway..."
 
-if [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-    echo "[render] ERROR: OPENCLAW_GATEWAY_TOKEN is not set." >&2
-    exit 1
-fi
-
 "$@" \
-    --port "$PORT_VALUE" \
-    --token "$OPENCLAW_GATEWAY_TOKEN" &
+    --port "$PORT_VALUE" &
 
 GATEWAY_PID=$!
 
 # ------------------------------------------------------------
-# 6. Wait for Gateway
+# 7. Wait for Gateway to become ready
 # ------------------------------------------------------------
 
 echo "[render] Waiting for gateway..."
 
 READY=0
+
 i=1
 
 while [ "$i" -le 60 ]; do
+
     if curl -fsS \
         --connect-timeout 2 \
         --max-time 3 \
@@ -94,6 +112,7 @@ while [ "$i" -le 60 ]; do
     fi
 
     sleep 2
+
     i=$((i + 1))
 done
 
@@ -104,7 +123,12 @@ else
 fi
 
 # ------------------------------------------------------------
-# 7. Optional dashboard owner URL
+# 8. Generate one-time owner dashboard URL
+#
+# Enable with:
+#
+# OPENCLAW_RENDER_PRINT_DASHBOARD=true
+#
 # ------------------------------------------------------------
 
 if [ "${OPENCLAW_RENDER_PRINT_DASHBOARD:-false}" = "true" ]; then
@@ -136,19 +160,35 @@ NODE
         )
 
         if [ -n "$DASHBOARD_URL" ]; then
+
             echo ""
             echo "============================================================"
             echo " OPENCLAW ONE-TIME OWNER DASHBOARD URL"
             echo "============================================================"
             echo "$DASHBOARD_URL"
             echo "============================================================"
+            echo " Open this URL in your browser."
+            echo " It is short-lived and intended for the owner only."
+            echo "============================================================"
             echo ""
+
+        else
+
+            echo "[render] WARNING: dashboard --json did not return browserUrl." >&2
+            echo "[render] Raw dashboard response:"
+            echo "$DASHBOARD_JSON"
+
         fi
+
+    else
+
+        echo "[render] WARNING: Could not generate dashboard owner link." >&2
+
     fi
 fi
 
 # ------------------------------------------------------------
-# 8. Periodic FilesLink backup
+# 9. Periodic FilesLink / T Cloud backup
 # ------------------------------------------------------------
 
 interval=${FILESLINK_BACKUP_INTERVAL_SECONDS:-86400}
@@ -165,16 +205,18 @@ if [ "$interval" -gt 0 ] && \
 
     (
         while sleep "$interval"; do
+
             echo "[render] Running scheduled T Cloud backup..."
 
             "$BACKUP_TOOL" backup || \
                 echo "[render] WARNING: scheduled FilesLink backup failed." >&2
+
         done
     ) &
 fi
 
 # ------------------------------------------------------------
-# 9. Keep Gateway as main process
+# 10. Keep Gateway as the main process
 # ------------------------------------------------------------
 
 wait "$GATEWAY_PID"
