@@ -420,3 +420,21 @@ echo "[render] Render service is running."
 # ============================================================
 
 wait "$GATEWAY_PID"
+    
+echo "[render] ================================================"
+echo "[render] DEVICE PAIRING DIAGNOSTIC"
+echo "[render] ================================================"
+
+echo "[render] Checking OpenClaw device CLI..."
+
+node openclaw.mjs devices --help 2>&1 || true
+
+echo "[render] Checking pending devices..."
+
+node openclaw.mjs devices list \
+    --token "$OPENCLAW_GATEWAY_TOKEN" \
+    --json 2>&1 || true
+
+echo "[render] ================================================"
+echo "[render] END DEVICE PAIRING DIAGNOSTIC"
+echo "[render] ================================================"
