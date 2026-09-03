@@ -74,6 +74,18 @@ node openclaw.mjs config set \
 echo "[render] Gateway token authentication configured."
 
 # ============================================================
+# Control UI authentication
+# ============================================================
+
+echo "[render] Configuring Control UI authentication..."
+
+node openclaw.mjs config set \
+    gateway.controlUi.allowInsecureAuth \
+    true || true
+
+echo "[render] Control UI token authentication enabled."
+
+# ============================================================
 # Render proxy
 # ============================================================
 
@@ -183,166 +195,6 @@ else
 fi
 
 echo "[render] Gateway is ready."
-
-# ============================================================
-# DEVICE PAIRING
-# ============================================================
-#
-# OpenClaw requires a new browser/device to be paired.
-#
-# IMPORTANT:
-# We DO NOT approve a request until it actually exists.
-#
-# The browser creates the pairing request when it attempts
-# to connect. Therefore we poll for pending requests.
-#
-# We also approve the EXACT requestId instead of using
-# "approve --latest", because newer OpenClaw versions can
-# treat --latest as a selection/preview operation.
-#
-# ============================================================
-
-echo "[render] Device pairing monitor started."
-
-(
-    # Give the Control UI/gateway a little time to finish startup.
-    sleep 8
-
-    ATTEMPTS=0
-
-    while [ "$ATTEMPTS" -lt 180 ]; do
-
-        # ----------------------------------------------------
-        # Ask the local gateway for pending pairing requests.
-        # ----------------------------------------------------
-
-        PAIRING_OUTPUT="$(
-            node openclaw.mjs devices list \
-                --token "$OPENCLAW_GATEWAY_TOKEN" \
-                --json 2>/dev/null || true
-        )"
-
-        if [ -n "$PAIRING_OUTPUT" ]; then
-
-            # ------------------------------------------------
-            # Extract the newest pending request ID.
-            # ------------------------------------------------
-
-            REQUEST_ID="$(
-                printf '%s\n' "$PAIRING_OUTPUT" |
-                node -e '
-                    let input = "";
-
-                    process.stdin.on("data", chunk => {
-                        input += chunk;
-                    });
-
-                    process.stdin.on("end", () => {
-                        try {
-                            const data = JSON.parse(input.trim());
-
-                            let pending =
-                                data.pending ||
-                                data.pendingRequests ||
-                                data.requests ||
-                                [];
-
-                            if (!Array.isArray(pending)) {
-                                pending = [];
-                            }
-
-                            if (pending.length === 0) {
-                                process.exit(0);
-                            }
-
-                            /*
-                             * Find the newest valid request.
-                             * Prefer timestamp when available.
-                             */
-
-                            const valid = pending.filter(
-                                item =>
-                                    item &&
-                                    typeof item.requestId === "string"
-                            );
-
-                            if (valid.length === 0) {
-                                process.exit(0);
-                            }
-
-                            valid.sort((a, b) => {
-                                const ta =
-                                    Number(a.ts || a.createdAt || 0);
-
-                                const tb =
-                                    Number(b.ts || b.createdAt || 0);
-
-                                return ta - tb;
-                            });
-
-                            const newest =
-                                valid[valid.length - 1];
-
-                            process.stdout.write(
-                                newest.requestId
-                            );
-
-                        } catch (_) {
-                            process.exit(0);
-                        }
-                    });
-                ' 2>/dev/null || true
-            )"
-
-            # ------------------------------------------------
-            # Approve exact request.
-            # ------------------------------------------------
-
-            if [ -n "$REQUEST_ID" ]; then
-
-                echo "[render] Pending device pairing request detected."
-                echo "[render] Approving current device..."
-
-                APPROVE_OUTPUT="$(
-                    node openclaw.mjs devices approve \
-                        "$REQUEST_ID" \
-                        --token "$OPENCLAW_GATEWAY_TOKEN" \
-                        --json 2>&1 || true
-                )"
-
-                if printf '%s\n' "$APPROVE_OUTPUT" |
-                    grep -qiE \
-                    '"approved"[[:space:]]*:[[:space:]]*true|approved'; then
-
-                    echo "[render] Device pairing approved."
-
-                    # ------------------------------------------------
-                    # Give the browser time to receive the approval.
-                    # ------------------------------------------------
-
-                    sleep 3
-
-                else
-
-                    echo "[render] Device approval did not succeed."
-                    echo "[render] Waiting for the next pairing request."
-
-                fi
-
-            fi
-
-        fi
-
-        sleep 3
-        ATTEMPTS=$((ATTEMPTS + 1))
-
-    done
-
-    echo "[render] Device pairing monitor finished."
-
-) &
-
-PAIRING_MONITOR_PID=$!
 
 # ============================================================
 # Owner dashboard
