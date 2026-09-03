@@ -8,14 +8,13 @@ echo "[render] Starting OpenClaw Render entrypoint..."
 # Configuration
 # ============================================================
 
-BACKUP_TOOL=/app/deploy/fileslink-backup.sh
+BACKUP_TOOL="/app/deploy/fileslink-backup.sh"
 
-STATE_DIR="${OPENCLAW_STATE_DIR:-/tmp/.openclaw}"
 PORT="${OPENCLAW_GATEWAY_PORT:-10000}"
 RENDER_URL="${RENDER_EXTERNAL_URL:-}"
 
 # ============================================================
-# FilesLink / T Cloud restore
+# Restore OpenClaw state from T Cloud / FilesLink
 # ============================================================
 
 echo "[render] Restoring OpenClaw state from T Cloud..."
@@ -23,26 +22,30 @@ echo "[render] Restoring OpenClaw state from T Cloud..."
 if [ "${FILESLINK_RESTORE_ON_START:-true}" = "true" ] && [ -x "$BACKUP_TOOL" ]; then
     "$BACKUP_TOOL" restore || \
         echo "[render] WARNING: FilesLink restore failed; continuing with current state." >&2
+else
+    echo "[render] No FilesLink restore configured."
 fi
 
 # ============================================================
-# Scheduled backup
+# Background backup
 # ============================================================
 
-interval=${FILESLINK_BACKUP_INTERVAL_SECONDS:-86400}
+INTERVAL="${FILESLINK_BACKUP_INTERVAL_SECONDS:-86400}"
 
-case "$interval" in
+case "$INTERVAL" in
     ''|*[!0-9]*)
-        interval=86400
+        INTERVAL=86400
         ;;
 esac
 
-if [ "$interval" -gt 0 ] \
+if [ "$INTERVAL" -gt 0 ] \
     && [ -x "$BACKUP_TOOL" ] \
     && [ -n "${FILESLINK_API_BASE_URL:-}" ]; then
 
     (
-        while sleep "$interval"; do
+        while sleep "$INTERVAL"; do
+            echo "[render] Running scheduled T Cloud backup..."
+
             "$BACKUP_TOOL" backup || \
                 echo "[render] WARNING: scheduled FilesLink backup failed." >&2
         done
@@ -60,8 +63,9 @@ fi
 
 echo "[render] Configuring gateway token authentication..."
 
-# Configure token authentication in OpenClaw's persistent state.
-node openclaw.mjs config set gateway.auth.mode token || true
+node openclaw.mjs config set \
+    gateway.auth.mode \
+    token || true
 
 node openclaw.mjs config set \
     gateway.auth.token \
@@ -70,13 +74,11 @@ node openclaw.mjs config set \
 echo "[render] Gateway token authentication configured."
 
 # ============================================================
-# Render reverse proxy
+# Render proxy
 # ============================================================
 
 echo "[render] Configuring trusted Render proxy..."
 
-# Render's public HTTPS proxy reaches the application locally.
-# Keep this narrowly scoped to localhost.
 node openclaw.mjs config set \
     gateway.trustedProxies \
     '["127.0.0.1"]' || true
@@ -86,11 +88,13 @@ node openclaw.mjs config set \
 # ============================================================
 
 if [ -n "$RENDER_URL" ]; then
+
     echo "[render] Configuring Control UI origin: $RENDER_URL"
 
     node openclaw.mjs config set \
         gateway.controlUi.allowedOrigins \
         "[\"$RENDER_URL\"]" || true
+
 fi
 
 # ============================================================
@@ -99,91 +103,219 @@ fi
 
 echo "[render] Gateway port: $PORT"
 echo "[render] Starting gateway..."
-
-# The dockerCommand passes:
-#
-#   node openclaw.mjs gateway --bind lan --allow-unconfigured
-#
-# We add the token explicitly so the Gateway has authentication
-# even on a completely fresh Render filesystem.
+echo "[render] Waiting for gateway..."
 
 "$@" --token "$OPENCLAW_GATEWAY_TOKEN" &
+
 GATEWAY_PID=$!
 
 cleanup() {
     echo "[render] Stopping Gateway..."
-    kill "$GATEWAY_PID" 2>/dev/null || true
+
+    if kill -0 "$GATEWAY_PID" 2>/dev/null; then
+        kill "$GATEWAY_PID" 2>/dev/null || true
+    fi
 }
 
 trap cleanup INT TERM EXIT
 
 # ============================================================
-# Wait for Gateway
+# Wait for Gateway process
 # ============================================================
 
-echo "[render] Waiting for Gateway..."
-
-READY=0
+GATEWAY_READY=0
 
 i=0
-while [ "$i" -lt 90 ]; do
+
+while [ "$i" -lt 120 ]; do
 
     if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
-        echo "[render] ERROR: Gateway process exited before becoming ready."
+        echo "[render] ERROR: Gateway process exited."
         wait "$GATEWAY_PID" || true
         exit 1
     fi
 
-    # Try the local startup endpoint.
+    # Check whether the Gateway HTTP server is responding.
     if node -e '
         const http = require("http");
+
         const port = Number(process.env.OPENCLAW_GATEWAY_PORT || 10000);
 
         const req = http.get(
           {
             host: "127.0.0.1",
-            port,
-            path: "/startupz",
+            port: port,
+            path: "/",
             timeout: 1500
           },
           res => {
-            process.exit(res.statusCode >= 200 && res.statusCode < 500 ? 0 : 1);
+            process.exit(
+              res.statusCode >= 200 && res.statusCode < 500
+                ? 0
+                : 1
+            );
           }
         );
 
         req.on("error", () => process.exit(1));
+
         req.on("timeout", () => {
-          req.destroy();
-          process.exit(1);
+            req.destroy();
+            process.exit(1);
         });
     '; then
-        READY=1
+
+        GATEWAY_READY=1
         break
+
     fi
 
     sleep 2
+
     i=$((i + 1))
+
 done
 
-if [ "$READY" -ne 1 ]; then
-    echo "[render] WARNING: Gateway did not answer /startupz within the expected time."
-    echo "[render] Continuing because the Gateway process is still running."
+if [ "$GATEWAY_READY" -eq 1 ]; then
+    echo "[render] Gateway HTTP server is responding."
+else
+    echo "[render] WARNING: Gateway did not respond during startup check."
 fi
 
 echo "[render] Gateway is ready."
 
 # ============================================================
-# Generate owner dashboard handoff
+# DEVICE PAIRING
+# ============================================================
+#
+# OpenClaw requires a new Control UI browser to be approved once.
+#
+# Render Free does not provide an interactive shell, so we perform
+# a controlled first-device approval here.
+#
+# IMPORTANT:
+# This approves ONLY the newest pending request.
+#
+# It does NOT disable device pairing globally.
+#
+# Once the first browser is paired, use:
+#
+#   Control UI -> Settings -> Devices
+#
+# to approve additional devices.
+#
+# ============================================================
+
+echo "[render] Checking for pending device pairing requests..."
+
+PAIRING_OUTPUT=""
+
+# Give the Gateway a little extra time to finish initialization.
+sleep 3
+
+# Ask the local Gateway for pending devices.
+#
+# Explicit token is supplied because the Gateway uses token auth.
+PAIRING_OUTPUT="$(
+    node openclaw.mjs devices list \
+        --token "$OPENCLAW_GATEWAY_TOKEN" \
+        --json 2>&1 || true
+)"
+
+# Never print the complete JSON because it may contain
+# sensitive device/bootstrap information.
+
+REQUEST_ID="$(
+    printf '%s\n' "$PAIRING_OUTPUT" |
+    node -e '
+        let input = "";
+
+        process.stdin.on("data", chunk => {
+            input += chunk;
+        });
+
+        process.stdin.on("end", () => {
+            try {
+                const data = JSON.parse(input.trim());
+
+                /*
+                 * OpenClaw versions can expose pending requests
+                 * under different top-level names. Check the
+                 * known forms.
+                 */
+
+                let pending =
+                    data.pending ||
+                    data.pendingRequests ||
+                    data.requests ||
+                    [];
+
+                if (!Array.isArray(pending)) {
+                    pending = [];
+                }
+
+                if (pending.length === 0) {
+                    process.exit(0);
+                }
+
+                const newest = pending[pending.length - 1];
+
+                if (newest && newest.requestId) {
+                    process.stdout.write(String(newest.requestId));
+                }
+            } catch (_) {
+                process.exit(0);
+            }
+        });
+    ' 2>/dev/null || true
+)"
+
+# ============================================================
+# Approve newest pending browser
+# ============================================================
+
+if [ -n "$REQUEST_ID" ]; then
+
+    echo "[render] Pending device request detected."
+    echo "[render] Approving newest device pairing request..."
+
+    APPROVE_OUTPUT="$(
+        node openclaw.mjs devices approve "$REQUEST_ID" \
+            --token "$OPENCLAW_GATEWAY_TOKEN" \
+            --json 2>&1 || true
+    )"
+
+    if printf '%s\n' "$APPROVE_OUTPUT" |
+        grep -qiE '"(success|approved)"[[:space:]]*:[[:space:]]*true|approved'; then
+
+        echo "[render] Device pairing approved successfully."
+
+    else
+
+        echo "[render] Device approval command completed."
+        echo "[render] If the browser still reports pairing required,"
+        echo "[render] refresh the Control UI once."
+
+    fi
+
+else
+
+    echo "[render] No pending device pairing request found."
+    echo "[render] This is normal if no browser has attempted to connect yet."
+
+fi
+
+# ============================================================
+# Owner dashboard
 # ============================================================
 
 echo "[render] Generating one-time dashboard owner link..."
 
-DASHBOARD_OUTPUT="$(node openclaw.mjs dashboard --json 2>&1 || true)"
+DASHBOARD_OUTPUT="$(
+    node openclaw.mjs dashboard --json 2>&1 || true
+)"
 
-# Do NOT print the complete JSON because it may contain
-# authentication/bootstrap information.
-
-BROWSER_URL="$(
+DASHBOARD_URL="$(
     printf '%s\n' "$DASHBOARD_OUTPUT" |
     node -e '
         let input = "";
@@ -194,48 +326,50 @@ BROWSER_URL="$(
 
         process.stdin.on("end", () => {
             try {
-                const obj = JSON.parse(input.trim());
+                const data = JSON.parse(input.trim());
 
-                if (obj && obj.browserUrl) {
-                    process.stdout.write(obj.browserUrl);
+                if (data && data.browserUrl) {
+                    process.stdout.write(String(data.browserUrl));
+                    return;
+                }
+
+                if (data && data.url) {
+                    process.stdout.write(String(data.url));
                 }
             } catch (_) {
-                // Ignore non-JSON output.
+                // Dashboard command may output non-JSON logs.
             }
         });
     ' 2>/dev/null || true
 )"
 
-if [ -n "$BROWSER_URL" ]; then
+if [ -n "$DASHBOARD_URL" ]; then
 
     echo ""
     echo "============================================================"
-    echo " OPENCLAW ONE-TIME OWNER DASHBOARD URL"
+    echo " OPENCLAW ONE-TIME OWNER DASHBOARD"
     echo "============================================================"
-    echo "$BROWSER_URL"
+    echo "$DASHBOARD_URL"
     echo "============================================================"
     echo ""
-    echo "[render] IMPORTANT: Open this URL in the browser you want to pair."
-    echo "[render] The URL is single-use and expires shortly."
-    echo "[render] Do not share this URL with anyone."
+    echo "[render] Open this URL in your browser."
+    echo "[render] Treat this URL like a secret."
+    echo ""
 
 else
 
-    echo "[render] WARNING: Could not generate the owner dashboard URL."
+    echo "[render] Owner dashboard URL was not returned."
+    echo "[render] You can still use the normal Render URL with the"
+    echo "[render] configured Gateway token."
 
-    if printf '%s\n' "$DASHBOARD_OUTPUT" |
-        grep -qi "not ready\|failed\|error"; then
-
-        echo "[render] Dashboard command returned an error."
-        echo "[render] Check Gateway startup and authentication."
-    fi
 fi
 
 # ============================================================
-# Keep Gateway in foreground
+# Final status
 # ============================================================
 
 echo "[render] OpenClaw Gateway process: $GATEWAY_PID"
 echo "[render] Render service is running."
 
+# Keep the container alive.
 wait "$GATEWAY_PID"
