@@ -24,3 +24,9 @@ services:
         value: "86400"
       - key: FILESLINK_RESTORE_ON_START
         value: "true"
+      # Render's Docker build environment may hide its cgroup limit from tsdown.
+      # These values are translated to Docker build args by Render.
+      - key: OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB
+        value: "4096"
+      - key: OPENCLAW_DOCKER_BUILD_NODE_OPTIONS
+        value: "--max-old-space-size=4096"
