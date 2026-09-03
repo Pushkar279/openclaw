@@ -1,5 +1,4 @@
 #!/bin/sh
-
 set -eu
 
 BACKUP_TOOL=/app/deploy/fileslink-backup.sh
@@ -7,43 +6,29 @@ BACKUP_TOOL=/app/deploy/fileslink-backup.sh
 echo "[render] Starting OpenClaw Render entrypoint..."
 
 # ------------------------------------------------------------
-# 1. Restore persistent state from T Cloud
+# 1. Restore persistent OpenClaw state from FilesLink/T Cloud
 # ------------------------------------------------------------
 
 if [ "${FILESLINK_RESTORE_ON_START:-true}" = "true" ] && [ -x "$BACKUP_TOOL" ]; then
     echo "[render] Restoring OpenClaw state from T Cloud..."
 
     "$BACKUP_TOOL" restore || \
-        echo "[render] WARNING: FilesLink restore failed; continuing with current ephemeral state." >&2
+        echo "[render] WARNING: FilesLink restore failed; continuing with ephemeral state." >&2
 fi
 
 # ------------------------------------------------------------
-# 2. Configure Render proxy handling
-# ------------------------------------------------------------
-#
-# Render places the service behind its reverse proxy.
-# OpenClaw therefore needs to trust the local proxy source
-# so it can correctly attribute X-Forwarded-For.
-#
-# We use OpenClaw's config command rather than replacing
-# openclaw.json, so existing T Cloud-restored configuration
-# remains intact.
+# 2. Configure Render reverse proxy
 # ------------------------------------------------------------
 
 echo "[render] Configuring trusted Render proxy..."
 
-node openclaw.mjs config set gateway.trustedProxies '["127.0.0.1"]' || \
-    echo "[render] WARNING: Could not configure trustedProxies automatically." >&2
+node openclaw.mjs config set \
+    gateway.trustedProxies \
+    '["127.0.0.1"]' || \
+    echo "[render] WARNING: Could not configure trustedProxies." >&2
 
 # ------------------------------------------------------------
-# 3. Allow the Render Control UI origin
-# ------------------------------------------------------------
-#
-# Render supplies RENDER_EXTERNAL_URL automatically for web
-# services. We add it to OpenClaw's Control UI allowed origins.
-#
-# This prevents the next common error:
-# "origin not allowed"
+# 3. Configure Control UI origin
 # ------------------------------------------------------------
 
 if [ -n "${RENDER_EXTERNAL_URL:-}" ]; then
@@ -56,7 +41,133 @@ if [ -n "${RENDER_EXTERNAL_URL:-}" ]; then
 fi
 
 # ------------------------------------------------------------
-# 4. Start the periodic T Cloud backup process
+# 4. Render PORT
+# ------------------------------------------------------------
+
+PORT_VALUE="${PORT:-10000}"
+
+echo "[render] Gateway port: $PORT_VALUE"
+
+# ------------------------------------------------------------
+# 5. Start gateway in background temporarily
+#
+# We need the gateway running so that `openclaw dashboard`
+# can create the secure one-time owner handoff URL.
+# ------------------------------------------------------------
+
+echo "[render] Starting gateway..."
+
+if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+    "$@" \
+        --port "$PORT_VALUE" \
+        --token "$OPENCLAW_GATEWAY_TOKEN" &
+else
+    echo "[render] WARNING: OPENCLAW_GATEWAY_TOKEN is not set." >&2
+
+    "$@" \
+        --port "$PORT_VALUE" &
+fi
+
+GATEWAY_PID=$!
+
+# ------------------------------------------------------------
+# 6. Wait for gateway to become ready
+# ------------------------------------------------------------
+
+echo "[render] Waiting for gateway..."
+
+READY=0
+
+i=1
+while [ "$i" -le 60 ]; do
+    if curl -fsS \
+        --connect-timeout 2 \
+        --max-time 3 \
+        "http://127.0.0.1:${PORT_VALUE}/startupz" >/dev/null 2>&1; then
+
+        READY=1
+        break
+    fi
+
+    if ! kill -0 "$GATEWAY_PID" 2>/dev/null; then
+        echo "[render] ERROR: Gateway exited during startup." >&2
+        wait "$GATEWAY_PID"
+        exit 1
+    fi
+
+    sleep 2
+    i=$((i + 1))
+done
+
+if [ "$READY" -ne 1 ]; then
+    echo "[render] WARNING: Gateway did not report ready within timeout." >&2
+else
+    echo "[render] Gateway is ready."
+fi
+
+# ------------------------------------------------------------
+# 7. Generate one-time owner dashboard URL
+#
+# Enable this with:
+#
+# OPENCLAW_RENDER_PRINT_DASHBOARD=true
+#
+# The URL is valid for a short time and is intended for the
+# owner to bootstrap this browser.
+# ------------------------------------------------------------
+
+if [ "${OPENCLAW_RENDER_PRINT_DASHBOARD:-false}" = "true" ]; then
+
+    echo "[render] Generating one-time dashboard owner link..."
+
+    DASHBOARD_JSON=$(
+        node openclaw.mjs dashboard --json 2>/dev/null || true
+    )
+
+    if [ -n "$DASHBOARD_JSON" ]; then
+
+        DASHBOARD_URL=$(
+            node --input-type=module - "$DASHBOARD_JSON" <<'NODE'
+const raw = process.argv[2];
+
+try {
+    const data = JSON.parse(raw);
+
+    if (data.ok === false) {
+        process.exit(1);
+    }
+
+    process.stdout.write(data.browserUrl || "");
+} catch {
+    process.exit(1);
+}
+NODE
+        )
+
+        if [ -n "$DASHBOARD_URL" ]; then
+            echo ""
+            echo "============================================================"
+            echo " OPENCLAW ONE-TIME OWNER DASHBOARD URL"
+            echo "============================================================"
+            echo "$DASHBOARD_URL"
+            echo "============================================================"
+            echo " Open this URL in your browser."
+            echo " It is short-lived and intended for the owner only."
+            echo "============================================================"
+            echo ""
+        else
+            echo "[render] WARNING: dashboard --json did not return browserUrl." >&2
+            echo "[render] Raw dashboard response:"
+            echo "$DASHBOARD_JSON"
+        fi
+
+    else
+        echo "[render] WARNING: Could not generate dashboard owner link." >&2
+    fi
+fi
+
+# ------------------------------------------------------------
+# 8. Periodic FilesLink backup
 # ------------------------------------------------------------
 
 interval=${FILESLINK_BACKUP_INTERVAL_SECONDS:-86400}
@@ -73,43 +184,18 @@ if [ "$interval" -gt 0 ] && \
 
     (
         while sleep "$interval"; do
+
             echo "[render] Running scheduled T Cloud backup..."
 
             "$BACKUP_TOOL" backup || \
                 echo "[render] WARNING: scheduled FilesLink backup failed." >&2
+
         done
     ) &
 fi
 
 # ------------------------------------------------------------
-# 5. Use Render's PORT
-# ------------------------------------------------------------
-#
-# Render expects a web service to listen on the PORT it assigns.
-# If PORT isn't available for some reason, fall back to 10000.
+# 9. Keep gateway as the main process
 # ------------------------------------------------------------
 
-PORT_VALUE="${PORT:-10000}"
-
-echo "[render] Gateway port: $PORT_VALUE"
-
-# ------------------------------------------------------------
-# 6. Start OpenClaw with authentication
-# ------------------------------------------------------------
-
-if [ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
-
-    echo "[render] Gateway token authentication enabled."
-
-    exec "$@" \
-        --port "$PORT_VALUE" \
-        --token "$OPENCLAW_GATEWAY_TOKEN"
-
-else
-
-    echo "[render] WARNING: OPENCLAW_GATEWAY_TOKEN is not set." >&2
-
-    exec "$@" \
-        --port "$PORT_VALUE"
-
-fi
+wait "$GATEWAY_PID"
