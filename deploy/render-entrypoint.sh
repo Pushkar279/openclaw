@@ -185,77 +185,6 @@ fi
 echo "[render] Gateway is ready."
 
 # ============================================================
-# Automatic Control UI device pairing
-# ============================================================
-# Free Render web services do not provide Shell/SSH access. Monitor the
-# gateway's pending requests and approve the exact request ID once the
-# browser has connected with the shared gateway token.
-echo "[render] Starting automatic device-pairing monitor..."
-(
-    sleep 5
-    while kill -0 "$GATEWAY_PID" 2>/dev/null; do
-        # Render Free has 512 MB RAM. Do not start another CLI process while
-        # a slow SQLite/gateway request is still running.
-        LOCK_DIR="/tmp/openclaw-pairing-monitor.lock"
-        if mkdir "$LOCK_DIR" 2>/dev/null; then
-            PAIRING_OUTPUT="$(
-                timeout 12s node openclaw.mjs devices list \
-                    --url "ws://127.0.0.1:$PORT" \
-                    --token "$OPENCLAW_GATEWAY_TOKEN" \
-                    --json 2>/dev/null || true
-            )"
-
-            REQUEST_ID="$(
-                printf '%s\n' "$PAIRING_OUTPUT" |
-                node -e '
-                let input = "";
-                process.stdin.on("data", (chunk) => { input += chunk; });
-                process.stdin.on("end", () => {
-                    try {
-                        const start = input.indexOf("{");
-                        const end = input.lastIndexOf("}");
-                        const data = JSON.parse(
-                            (start >= 0 && end >= start)
-                                ? input.slice(start, end + 1)
-                                : input.trim(),
-                        );
-                        const pending = Array.isArray(data?.pending)
-                            ? data.pending
-                            : Array.isArray(data?.pendingRequests)
-                              ? data.pendingRequests
-                              : Array.isArray(data?.requests)
-                                ? data.requests
-                                : [];
-                        const request = pending
-                            .slice()
-                            .reverse()
-                            .find((item) =>
-                                typeof item?.requestId === "string"
-                            );
-                        if (request) process.stdout.write(request.requestId);
-                    } catch (_) {}
-                });
-                ' 2>/dev/null || true
-            )"
-
-            if [ -n "$REQUEST_ID" ]; then
-                echo "[render] Approving Control UI device request: $REQUEST_ID"
-                timeout 12s node openclaw.mjs devices approve \
-                    "$REQUEST_ID" \
-                    --url "ws://127.0.0.1:$PORT" \
-                    --token "$OPENCLAW_GATEWAY_TOKEN" \
-                    --json 2>&1 || true
-            fi
-
-            rmdir "$LOCK_DIR" 2>/dev/null || true
-        fi
-
-        sleep 30
-    done
-) &
-PAIRING_MONITOR_PID=$!
-
-# ============================================================
 # Owner dashboard
 # ============================================================
 
@@ -323,7 +252,7 @@ fi
 # ============================================================
 
 echo "[render] Gateway process: $GATEWAY_PID"
-echo "[render] Device pairing monitor: $PAIRING_MONITOR_PID"
+echo "[render] Device pairing monitor: disabled (Render Free memory limit)"
 echo "[render] Render service is running."
 
 # ============================================================
